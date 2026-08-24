@@ -1,0 +1,14 @@
+**/__pycache__/
+*.py[cod]
+backend/shop.db
+backend/*.db
+backend/*.sqlite*
+backend/uploads/*
+!backend/uploads/.gitkeep
+frontend/node_modules/
+frontend/dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
