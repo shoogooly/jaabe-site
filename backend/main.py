@@ -19,15 +19,18 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "shop.db"
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+CUSTOMER_LOGO_RETENTION_DAYS = 10
+CUSTOMER_LOGO_CLEANUP_INTERVAL = 6 * 60 * 60
 
 DEFAULT_SITE_SETTINGS = {
     "production_name": "حک نگار",
@@ -100,6 +103,8 @@ def init_db():
               id INTEGER PRIMARY KEY AUTOINCREMENT, order_number TEXT NOT NULL UNIQUE, mobile TEXT NOT NULL,
               shop_name TEXT NOT NULL, address TEXT NOT NULL, city TEXT NOT NULL, shop_phone TEXT NOT NULL,
               instagram TEXT NOT NULL DEFAULT '', logo_url TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+              logo_expires_at TEXT NOT NULL DEFAULT '', logo_downloaded_at TEXT NOT NULL DEFAULT '',
+              logo_deleted_at TEXT NOT NULL DEFAULT '', logo_delete_reason TEXT NOT NULL DEFAULT '',
               payment_method TEXT NOT NULL, payment_status TEXT NOT NULL, status TEXT NOT NULL,
               total_price INTEGER NOT NULL, estimated_ready_date TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
             );
@@ -107,6 +112,10 @@ def init_db():
               id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
               product_id INTEGER NOT NULL, product_name TEXT NOT NULL, packs INTEGER NOT NULL,
               units_per_pack INTEGER NOT NULL, unit_price INTEGER NOT NULL, line_total INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS customer_uploads (
+              url TEXT PRIMARY KEY, created_at TEXT NOT NULL, order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
+              linked_at TEXT NOT NULL DEFAULT '', deleted_at TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS admins (
               id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL
@@ -159,6 +168,16 @@ def init_db():
             conn.execute("ALTER TABLE orders ADD COLUMN estimated_ready_date TEXT NOT NULL DEFAULT ''")
         if "bale_chat_id" not in order_columns:
             conn.execute("ALTER TABLE orders ADD COLUMN bale_chat_id TEXT NOT NULL DEFAULT ''")
+        if "logo_expires_at" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN logo_expires_at TEXT NOT NULL DEFAULT ''")
+        if "logo_downloaded_at" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN logo_downloaded_at TEXT NOT NULL DEFAULT ''")
+        if "logo_deleted_at" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN logo_deleted_at TEXT NOT NULL DEFAULT ''")
+        if "logo_delete_reason" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN logo_delete_reason TEXT NOT NULL DEFAULT ''")
+        conn.execute("""UPDATE orders SET logo_expires_at=strftime('%Y-%m-%dT%H:%M:%f+00:00',created_at,'+10 days')
+          WHERE logo_url<>'' AND logo_expires_at=''""")
         conn.execute("INSERT OR IGNORE INTO bale_settings(id,webhook_secret,updated_at) VALUES (1,?,?)", (secrets.token_urlsafe(24), datetime.now(timezone.utc).isoformat()))
         bale_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bale_settings)")}
         if "last_update_id" not in bale_columns:
@@ -214,6 +233,84 @@ def init_db():
                     ).lastrowid
                     conn.execute("INSERT INTO product_images(product_id,url,sort_order) VALUES (?,?,0)", (pid, "/jewelry-box.png"))
 
+
+def customer_logo_file_path(url: str) -> Path | None:
+    if not url or not url.startswith("/uploads/"):
+        return None
+    filename = Path(url).name
+    if not filename or filename in {".", ".."}:
+        return None
+    candidate = (UPLOAD_DIR / filename).resolve()
+    if candidate.parent != UPLOAD_DIR.resolve():
+        return None
+    return candidate
+
+
+def delete_customer_logo(conn: sqlite3.Connection, order, reason: str) -> str:
+    deleted_at = datetime.now(timezone.utc).isoformat()
+    logo_url = order["logo_url"] or ""
+    if logo_url:
+        used_by_product = conn.execute("SELECT 1 FROM product_images WHERE url=? LIMIT 1", (logo_url,)).fetchone()
+        used_by_order = conn.execute("SELECT 1 FROM orders WHERE logo_url=? AND id<>? LIMIT 1", (logo_url, order["id"])).fetchone()
+        if not used_by_product and not used_by_order:
+            file_path = customer_logo_file_path(logo_url)
+            if file_path:
+                file_path.unlink(missing_ok=True)
+    conn.execute(
+        "UPDATE orders SET logo_url='',logo_deleted_at=?,logo_delete_reason=? WHERE id=?",
+        (deleted_at, reason, order["id"]),
+    )
+    if logo_url:
+        conn.execute("UPDATE customer_uploads SET deleted_at=? WHERE url=?", (deleted_at, logo_url))
+    return deleted_at
+
+
+def cleanup_expired_customer_logos() -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    removed = 0
+    with db() as conn:
+        expired = list(conn.execute(
+            "SELECT * FROM orders WHERE logo_url<>'' AND logo_expires_at<>'' AND logo_expires_at<=?",
+            (now,),
+        ))
+        for order in expired:
+            delete_customer_logo(conn, order, "expired")
+            removed += 1
+    return removed
+
+
+def cleanup_abandoned_customer_uploads() -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=CUSTOMER_LOGO_RETENTION_DAYS)).isoformat()
+    removed = 0
+    with db() as conn:
+        abandoned = list(conn.execute(
+            "SELECT * FROM customer_uploads WHERE order_id IS NULL AND deleted_at='' AND created_at<=?",
+            (cutoff,),
+        ))
+        for upload in abandoned:
+            url = upload["url"]
+            used_by_product = conn.execute("SELECT 1 FROM product_images WHERE url=? LIMIT 1", (url,)).fetchone()
+            used_by_order = conn.execute("SELECT 1 FROM orders WHERE logo_url=? LIMIT 1", (url,)).fetchone()
+            if not used_by_product and not used_by_order:
+                file_path = customer_logo_file_path(url)
+                if file_path:
+                    file_path.unlink(missing_ok=True)
+                conn.execute("DELETE FROM customer_uploads WHERE url=?", (url,))
+                removed += 1
+    return removed
+
+
+def customer_logo_cleanup_loop():
+    while True:
+        try:
+            cleanup_expired_customer_logos()
+            cleanup_abandoned_customer_uploads()
+        except Exception:
+            pass
+        time.sleep(CUSTOMER_LOGO_CLEANUP_INTERVAL)
+
+
+_customer_logo_cleanup_thread = None
 
 init_db()
 
@@ -927,7 +1024,10 @@ def download_bale_customer_file(message: dict) -> str:
         raise ValueError("حجم فایل باید کمتر از ۵ مگابایت باشد")
     destination = UPLOAD_DIR / f"{secrets.token_hex(16)}{suffix}"
     destination.write_bytes(content)
-    return f"/uploads/{destination.name}"
+    url = f"/uploads/{destination.name}"
+    with db() as conn:
+        conn.execute("INSERT OR IGNORE INTO customer_uploads(url,created_at) VALUES (?,?)", (url, datetime.now(timezone.utc).isoformat()))
+    return url
 
 
 def register_bale_order(chat_id: str, method: str, data: dict):
@@ -1229,8 +1329,13 @@ def bale_polling_loop():
 
 
 @app.on_event("startup")
-def start_bale_local_polling():
-    global _bale_poll_thread
+def start_background_services():
+    global _bale_poll_thread, _customer_logo_cleanup_thread
+    cleanup_expired_customer_logos()
+    cleanup_abandoned_customer_uploads()
+    if _customer_logo_cleanup_thread is None or not _customer_logo_cleanup_thread.is_alive():
+        _customer_logo_cleanup_thread = threading.Thread(target=customer_logo_cleanup_loop, name="customer-logo-cleanup", daemon=True)
+        _customer_logo_cleanup_thread.start()
     if _bale_poll_thread is None or not _bale_poll_thread.is_alive():
         _bale_poll_thread = threading.Thread(target=bale_polling_loop, name="bale-polling", daemon=True)
         _bale_poll_thread.start()
@@ -1246,7 +1351,7 @@ def catalog():
 
 
 @app.post("/api/uploads")
-def upload(file: UploadFile = File(...)):
+def upload(file: UploadFile = File(...), purpose: str = Form("product")):
     allowed = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "application/pdf": ".pdf"}
     if file.content_type not in allowed:
         raise HTTPException(400, "فقط تصویر یا PDF مجاز است")
@@ -1257,7 +1362,11 @@ def upload(file: UploadFile = File(...)):
     if destination.stat().st_size > 5 * 1024 * 1024:
         destination.unlink(missing_ok=True)
         raise HTTPException(400, "حداکثر حجم فایل ۵ مگابایت است")
-    return {"url": f"/uploads/{destination.name}"}
+    url = f"/uploads/{destination.name}"
+    if purpose == "customer_logo":
+        with db() as conn:
+            conn.execute("INSERT OR IGNORE INTO customer_uploads(url,created_at) VALUES (?,?)", (url, datetime.now(timezone.utc).isoformat()))
+    return {"url": url}
 
 
 @app.post("/api/orders")
@@ -1277,12 +1386,17 @@ def create_order(payload: OrderInput):
             lines.append((product, item.packs, line_total))
         order_number = f"HJ-{datetime.now():%y%m%d}-{secrets.randbelow(9000)+1000}"
         payment_status = {"online": "pending", "cod": "cod", "deposit": "deposit_pending"}[payload.payment_method]
+        created_at = datetime.now(timezone.utc)
+        logo_expires_at = (created_at + timedelta(days=CUSTOMER_LOGO_RETENTION_DAYS)).isoformat() if payload.logo_url else ""
         cursor = conn.execute(
-            """INSERT INTO orders(order_number,mobile,shop_name,address,city,shop_phone,instagram,logo_url,notes,bale_chat_id,payment_method,payment_status,status,total_price,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO orders(order_number,mobile,shop_name,address,city,shop_phone,instagram,logo_url,notes,bale_chat_id,payment_method,payment_status,status,total_price,logo_expires_at,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (order_number, payload.mobile, payload.shop_name, payload.address, payload.city, payload.shop_phone, payload.instagram,
-             payload.logo_url, payload.notes, payload.bale_chat_id.strip(), payload.payment_method, payment_status, "new", total, datetime.now(timezone.utc).isoformat()),
+             payload.logo_url, payload.notes, payload.bale_chat_id.strip(), payload.payment_method, payment_status, "new", total, logo_expires_at, created_at.isoformat()),
         )
+        if payload.logo_url:
+            conn.execute("INSERT OR IGNORE INTO customer_uploads(url,created_at) VALUES (?,?)", (payload.logo_url, created_at.isoformat()))
+            conn.execute("UPDATE customer_uploads SET order_id=?,linked_at=? WHERE url=?", (cursor.lastrowid, created_at.isoformat(), payload.logo_url))
         for product, packs, line_total in lines:
             conn.execute(
                 "INSERT INTO order_items(order_id,product_id,product_name,packs,units_per_pack,unit_price,line_total) VALUES (?,?,?,?,?,?,?)",
@@ -1400,8 +1514,40 @@ def delete_product(product_id: int):
     return {"ok": True}
 
 
+@app.get("/api/admin/orders/{order_id}/logo", dependencies=[Depends(require_admin)])
+def download_order_logo(order_id: int):
+    with db() as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not order:
+            raise HTTPException(404, "سفارش پیدا نشد")
+        if not order["logo_url"]:
+            raise HTTPException(410, "فایل لوگو قبلاً حذف شده یا برای این سفارش ثبت نشده است")
+        file_path = customer_logo_file_path(order["logo_url"])
+        if not file_path or not file_path.exists():
+            delete_customer_logo(conn, order, "missing")
+            raise HTTPException(410, "فایل لوگو روی فضای ذخیره‌سازی موجود نیست")
+        downloaded_at = datetime.now(timezone.utc).isoformat()
+        conn.execute("UPDATE orders SET logo_downloaded_at=? WHERE id=?", (downloaded_at, order_id))
+        download_name = f"{order['order_number']}-logo{file_path.suffix.lower()}"
+        media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    return FileResponse(file_path, media_type=media_type, filename=download_name)
+
+
+@app.delete("/api/admin/orders/{order_id}/logo", dependencies=[Depends(require_admin)])
+def delete_order_logo(order_id: int):
+    with db() as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not order:
+            raise HTTPException(404, "سفارش پیدا نشد")
+        if not order["logo_url"]:
+            return {"ok": True, "deleted_at": order["logo_deleted_at"], "reason": order["logo_delete_reason"]}
+        deleted_at = delete_customer_logo(conn, order, "manual")
+    return {"ok": True, "deleted_at": deleted_at, "reason": "manual"}
+
 @app.get("/api/admin/orders", dependencies=[Depends(require_admin)])
 def orders():
+    cleanup_expired_customer_logos()
+    cleanup_abandoned_customer_uploads()
     with db() as conn:
         result = []
         for order in conn.execute("SELECT * FROM orders ORDER BY created_at DESC, id DESC"):
