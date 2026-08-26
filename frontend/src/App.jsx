@@ -7,7 +7,7 @@ import { ArrowLeft, ArrowRight, Bot, Box, Check, ChevronLeft, ChevronRight, Clip
 
 const DatePicker = DatePickerPackage?.default || DatePickerPackage;
 
-const API = 'http://127.0.0.1:8000';
+const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '');
 const money = value => new Intl.NumberFormat('fa-IR').format(value) + ' تومان';
 const digits = value => new Intl.NumberFormat('fa-IR').format(value);
 const asset = url => url?.startsWith('/uploads') ? API + url : url;

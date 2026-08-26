@@ -26,9 +26,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "shop.db"
-UPLOAD_DIR = BASE_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+PROJECT_DIR = BASE_DIR.parent
+DATA_DIR = Path(os.getenv("JAABE_DATA_DIR", str(BASE_DIR))).resolve()
+DB_PATH = Path(os.getenv("JAABE_DB_PATH", str(DATA_DIR / "shop.db"))).resolve()
+UPLOAD_DIR = Path(os.getenv("JAABE_UPLOAD_DIR", str(DATA_DIR / "uploads"))).resolve()
+FRONTEND_DIR = Path(os.getenv("JAABE_FRONTEND_DIR", str(PROJECT_DIR / "frontend" / "dist"))).resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CUSTOMER_LOGO_RETENTION_DAYS = 10
 CUSTOMER_LOGO_CLEANUP_INTERVAL = 6 * 60 * 60
 
@@ -46,9 +51,15 @@ DEFAULT_SITE_SETTINGS = {
 OWNER_MOBILE = "09399506609"
 
 app = FastAPI(title="Hakkar Jewelry Boxes API", version="1.0.0")
+allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+allowed_origins.extend(
+    origin.strip().rstrip("/")
+    for origin in os.getenv("JAABE_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1583,3 +1594,22 @@ def update_order(order_id: int, payload: OrderUpdateInput):
     if updated["bale_chat_id"]:
         notify_bale_order(updated["bale_chat_id"], "🔔 سفارش شما به‌روزرسانی شد.\n" + format_tracking(dict(updated)))
     return {"ok": True}
+
+
+# The production deployment serves the compiled React application from the
+# same process and domain as the API. API and upload routes above keep priority.
+if FRONTEND_DIR.is_dir():
+    frontend_assets = FRONTEND_DIR / "assets"
+    if frontend_assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=frontend_assets), name="frontend-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        requested = (FRONTEND_DIR / full_path).resolve()
+        try:
+            requested.relative_to(FRONTEND_DIR)
+        except ValueError:
+            raise HTTPException(404, "فایل پیدا نشد")
+        if full_path and requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(FRONTEND_DIR / "index.html")
