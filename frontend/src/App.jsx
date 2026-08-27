@@ -256,19 +256,38 @@ const deleteCategory=async category=>{if(!confirm(`دسته «${category.name}»
   return <div className="modal-backdrop"><form className="modal" onSubmit={save}><div className="modal-title"><h2>{product.id?'ویرایش محصول':'محصول جدید'}</h2><button type="button" className="icon-button" onClick={onClose}><X/></button></div><div className="form-grid">{field('name','نام محصول')}{field('dimensions','ابعاد')}{field('unit_price','قیمت هر عدد (تومان)','number')}{field('units_per_pack','تعداد در هر بسته','number')}{field('stock_packs','موجودی بسته','number')}<label className="category-field"><span>دسته‌بندی</span><select value={data.category_id} onChange={e=>setData({...data,category_id:Number(e.target.value)})}>{localCategories.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select><div className="category-list">{localCategories.map(category=><div className={category.id===data.category_id?'category-chip selected':'category-chip'} key={category.id}><span>{category.name}</span><button type="button" aria-label={`حذف ${category.name}`} title="حذف دسته" onClick={()=>deleteCategory(category)}><Trash2 size={14}/></button></div>)}</div><div className="category-creator"><input value={categoryName} onChange={e=>setCategoryName(e.target.value)} placeholder="نام دسته‌بندی جدید"/><button type="button" onClick={addCategory} disabled={busy||!categoryName.trim()}><Plus size={16}/> افزودن دسته</button></div></label></div><label><span>توضیحات</span><textarea value={data.description} onChange={e=>setData({...data,description:e.target.value})}/></label><label className="switch"><input type="checkbox" checked={data.active} onChange={e=>setData({...data,active:e.target.checked})}/><span>نمایش محصول در فروشگاه</span></label><label className="image-upload"><ImagePlus/><span>افزودن تصویر محصول</span><input type="file" accept="image/*" onChange={e=>upload(e.target.files[0])}/></label>{data.images.length>0&&<div className="thumbs">{data.images.map((img,i)=><div key={img+i}><img src={asset(img)}/><button type="button" onClick={()=>setData({...data,images:data.images.filter((_,x)=>x!==i)})}><X size={14}/></button></div>)}</div>}{error&&<div className="error">{error}</div>}<button className="primary" disabled={busy}>{busy?'در حال ذخیره...':'ذخیره محصول'}</button></form></div>;
 }
 
-export default function App(){
-  const [catalog,setCatalog]=useState([]); const [settings,setSettings]=useState(defaultSettings); const [cart,setCart]=useState(()=>JSON.parse(localStorage.getItem('hakkar-cart')||'{}')); const [step,setStep]=useState(()=>new URLSearchParams(location.search).get('bale_chat_id')?'catalog':'home'); const [customer,setCustomer]=useState(()=>({...blankCustomer,bale_chat_id:new URLSearchParams(location.search).get('bale_chat_id')||''})); const [result,setResult]=useState(null); const [method,setMethod]=useState(''); const [loading,setLoading]=useState(true); const [error,setError]=useState('');
-  useEffect(()=>{Promise.all([request('/api/catalog'),request('/api/settings')]).then(([catalogData,settingsData])=>{setCatalog(catalogData);setSettings(settingsData)}).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[]); useEffect(()=>localStorage.setItem('hakkar-cart',JSON.stringify(cart)),[cart]);
-  const products=useMemo(()=>catalog.flatMap(c=>c.products),[catalog]); const items=products.filter(p=>cart[p.id]>0);
-  if(location.pathname==='/admin'||location.pathname==='/admin/') return <Admin/>;
-  if(loading)return <div className="loading"><Box/><p>در حال آماده‌سازی ویترین...</p></div>; if(error)return <div className="loading error">{error}<small>ابتدا سرور پایتون را اجرا کنید.</small></div>;
-  if(step==='home')return <Home catalog={catalog} settings={settings} onOrder={()=>setStep('catalog')} onTrack={()=>setStep('tracking')} onVisitor={()=>setStep('visitor')}/>;
-  if(step==='tracking')return <TrackingPage settings={settings} onBack={()=>setStep('home')}/>;
-  if(step==='visitor')return <VisitorRequestPage settings={settings} onBack={()=>setStep('home')}/>;
-  if(step==='checkout')return <Checkout items={items} cart={cart} setCart={setCart} onNext={()=>setStep('customer')} onBack={()=>setStep('catalog')}/>;
-  if(step==='customer')return <CustomerForm data={customer} setData={setCustomer} onNext={()=>setStep('payment')} onBack={()=>setStep('checkout')}/>;
-  if(step==='payment')return <Payment customer={customer} items={items} cart={cart} onBack={()=>setStep('customer')} onDone={(r,m)=>{setResult(r);setMethod(m);setCart({});setStep('success')}}/>;
-  if(step==='success')return <Success result={result} method={method} onHome={()=>{setStep('home');request('/api/catalog').then(setCatalog)}}/>;
-  return <Catalog catalog={catalog} settings={settings} cart={cart} setCart={setCart} goCheckout={()=>items.length&&setStep('checkout')}/>;
-}
+const routeToStep={
+  '/':'home','/order':'catalog','/products':'catalog','/order/cart':'checkout',
+  '/order/details':'customer','/order/payment':'payment','/order/success':'success',
+  '/track-order':'tracking','/tracking':'tracking','/visitor-request':'visitor','/visitor':'visitor',
+  '/admin':'admin'
+};
+const stepToRoute={home:'/',catalog:'/order',checkout:'/order/cart',customer:'/order/details',payment:'/order/payment',success:'/order/success',tracking:'/track-order',visitor:'/visitor-request',admin:'/admin'};
+const orderFlowSteps=new Set(['catalog','checkout','customer','payment','success']);
+const currentStep=()=>{
+  const path=location.pathname.replace(/\/+$/,'')||'/';
+  if(path==='/'&&new URLSearchParams(location.search).get('bale_chat_id'))return 'catalog';
+  return routeToStep[path]||'home';
+};
 
+export default function App(){
+  const initialBaleChatId=new URLSearchParams(location.search).get('bale_chat_id')||'';
+  const [catalog,setCatalog]=useState([]); const [settings,setSettings]=useState(defaultSettings); const [cart,setCart]=useState(()=>JSON.parse(localStorage.getItem('hakkar-cart')||'{}')); const [step,setStep]=useState(currentStep); const [customer,setCustomer]=useState(()=>({...blankCustomer,bale_chat_id:initialBaleChatId})); const [result,setResult]=useState(null); const [method,setMethod]=useState(''); const [loading,setLoading]=useState(true); const [error,setError]=useState('');
+  const products=useMemo(()=>catalog.flatMap(c=>c.products),[catalog]); const items=products.filter(p=>cart[p.id]>0);
+  const navigate=(next,{replace=false}={})=>{const query=customer.bale_chat_id&&orderFlowSteps.has(next)?`?bale_chat_id=${encodeURIComponent(customer.bale_chat_id)}`:'';history[replace?'replaceState':'pushState']({},'',(stepToRoute[next]||'/')+query);setStep(next);window.scrollTo({top:0,behavior:'auto'})};
+  useEffect(()=>{Promise.all([request('/api/catalog'),request('/api/settings')]).then(([catalogData,settingsData])=>{setCatalog(catalogData);setSettings(settingsData)}).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[]);
+  useEffect(()=>localStorage.setItem('hakkar-cart',JSON.stringify(cart)),[cart]);
+  useEffect(()=>{const onPopState=()=>{setStep(currentStep());window.scrollTo({top:0,behavior:'auto'})};addEventListener('popstate',onPopState);return()=>removeEventListener('popstate',onPopState)},[]);
+  useEffect(()=>{const titles={home:'حک نگار | جعبه جواهرات',catalog:'ثبت سفارش | حک نگار',checkout:'سبد خرید | حک نگار',customer:'اطلاعات سفارش | حک نگار',payment:'روش پرداخت | حک نگار',success:'ثبت موفق سفارش | حک نگار',tracking:'پیگیری سفارش | حک نگار',visitor:'درخواست ویزیتور | حک نگار',admin:'پنل مدیریت | حک نگار'};document.title=titles[step]||titles.home},[step]);
+  useEffect(()=>{if(!loading&&['checkout','customer','payment'].includes(step)&&!items.length)navigate('catalog',{replace:true});if(step==='success'&&!result)navigate('catalog',{replace:true})},[loading,step,items.length,result]);
+  if(step==='admin')return <Admin/>;
+  if(loading)return <div className="loading"><Box/><p>در حال آماده‌سازی ویترین...</p></div>; if(error)return <div className="loading error">{error}<small>ابتدا سرور پایتون را اجرا کنید.</small></div>;
+  if(step==='home')return <Home catalog={catalog} settings={settings} onOrder={()=>navigate('catalog')} onTrack={()=>navigate('tracking')} onVisitor={()=>navigate('visitor')}/>;
+  if(step==='tracking')return <TrackingPage settings={settings} onBack={()=>navigate('home')}/>;
+  if(step==='visitor')return <VisitorRequestPage settings={settings} onBack={()=>navigate('home')}/>;
+  if(step==='checkout')return <Checkout items={items} cart={cart} setCart={setCart} onNext={()=>navigate('customer')} onBack={()=>navigate('catalog')}/>;
+  if(step==='customer')return <CustomerForm data={customer} setData={setCustomer} onNext={()=>navigate('payment')} onBack={()=>navigate('checkout')}/>;
+  if(step==='payment')return <Payment customer={customer} items={items} cart={cart} onBack={()=>navigate('customer')} onDone={(r,m)=>{setResult(r);setMethod(m);setCart({});navigate('success')}}/>;
+  if(step==='success')return <Success result={result} method={method} onHome={()=>{navigate('home');request('/api/catalog').then(setCatalog)}}/>;
+  return <Catalog catalog={catalog} settings={settings} cart={cart} setCart={setCart} goCheckout={()=>items.length&&navigate('checkout')}/>;
+}
