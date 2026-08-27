@@ -277,3 +277,31 @@ input,textarea,select,button{max-width:100%}
   .footer-bottom{width:100%;margin:22px auto 0;padding-top:18px;align-items:center;text-align:center;gap:9px;line-height:1.8}
   .footer-bottom span{width:100%;overflow-wrap:anywhere}
 }
+
+/* Stable responsive brand headers and admin sign-in layout. */
+.home-logo-header{height:auto;min-height:106px;padding:12px 24px}
+.home-logo-header .brand{max-width:700px;min-width:0;justify-content:center}
+.home-logo-header .brand>div:last-child{min-width:0}
+.home-logo-header .brand h1{font-size:clamp(19px,2vw,25px);line-height:1.55;white-space:normal}
+.home-logo-header .brand p{line-height:1.6}
+.admin-login{min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:22px;padding:32px 20px 50px;overflow-x:hidden}
+.admin-login>.brand{position:static;top:auto;max-width:560px;margin:0;justify-content:center;flex:none}
+.admin-login>.brand>div:last-child{min-width:0}
+.admin-login>.brand h1{font-size:22px;line-height:1.65;white-space:normal}
+.admin-login-stack{flex:none}
+@media(max-width:600px){
+  .home-logo-header{min-height:84px;padding:10px 12px}
+  .home-logo-header .brand{width:100%;gap:9px;align-items:center}
+  .home-logo-header .brand-mark{width:44px;height:44px;flex:0 0 44px;border-radius:12px}
+  .home-logo-header .brand h1{font-size:15px;line-height:1.55}
+  .home-logo-header .brand p{font-size:10px;line-height:1.45;margin-top:1px}
+  .admin-login{justify-content:flex-start;gap:15px;padding:20px 12px 40px}
+  .admin-login>.brand{width:100%;gap:10px;align-items:center}
+  .admin-login>.brand-mark{width:46px;height:46px;flex:0 0 46px;border-radius:12px}
+  .admin-login>.brand h1{font-size:16px;line-height:1.55}
+  .admin-login>.brand p{font-size:10px;line-height:1.45;margin-top:2px}
+  .admin-login form{padding:22px 18px}
+}
+@media(max-width:350px){
+  .home-logo-header .brand h1,.admin-login>.brand h1{font-size:13.5px}
+}
