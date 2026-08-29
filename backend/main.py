@@ -165,7 +165,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS payment_settings (
               id INTEGER PRIMARY KEY CHECK(id=1), merchant_id TEXT NOT NULL DEFAULT '',
-              site_url TEXT NOT NULL DEFAULT 'https://jaabehakenegar.ir', enabled INTEGER NOT NULL DEFAULT 0,
+              site_url TEXT NOT NULL DEFAULT 'https://jaabehaknegar.ir', enabled INTEGER NOT NULL DEFAULT 0,
               updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS bale_sessions (
@@ -224,6 +224,7 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO admin_users(mobile,role,active,created_at,created_by) VALUES (?,?,?,?,?)", (OWNER_MOBILE, "owner", 1, now, "system"))
         conn.execute("INSERT OR IGNORE INTO sms_settings(id,updated_at) VALUES (1,?)", (now,))
         conn.execute("INSERT OR IGNORE INTO payment_settings(id,updated_at) VALUES (1,?)", (now,))
+        conn.execute("UPDATE payment_settings SET site_url='https://jaabehaknegar.ir' WHERE site_url='https://jaabehakenegar.ir'")
         sms_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sms_settings)")}
         if "verified" not in sms_columns:
             conn.execute("ALTER TABLE sms_settings ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
@@ -391,7 +392,7 @@ class BaleSettingsInput(BaseModel):
 
 class PaymentSettingsInput(BaseModel):
     merchant_id: str = Field(default="", max_length=100)
-    site_url: str = Field(default="https://jaabehakenegar.ir", max_length=500)
+    site_url: str = Field(default="https://jaabehaknegar.ir", max_length=500)
     enabled: bool = False
 
 
@@ -450,7 +451,7 @@ ZARINPAL_GATEWAY_URL = "https://www.zarinpal.com/pg/StartPay/"
 def get_payment_settings() -> dict:
     with db() as conn:
         row = conn.execute("SELECT * FROM payment_settings WHERE id=1").fetchone()
-    return dict(row) if row else {"merchant_id": "", "site_url": "https://jaabehakenegar.ir", "enabled": 0}
+    return dict(row) if row else {"merchant_id": "", "site_url": "https://jaabehaknegar.ir", "enabled": 0}
 
 
 def zarinpal_post(url: str, payload: dict) -> dict:
@@ -842,7 +843,7 @@ def update_site_settings(payload: SiteSettingsInput):
 @app.get("/api/admin/payment-settings", dependencies=[Depends(require_owner)])
 def admin_payment_settings():
     settings = get_payment_settings()
-    return {"has_merchant_id": bool(settings.get("merchant_id")), "site_url": settings.get("site_url", "https://jaabehakenegar.ir"), "enabled": bool(settings.get("enabled"))}
+    return {"has_merchant_id": bool(settings.get("merchant_id")), "site_url": settings.get("site_url", "https://jaabehaknegar.ir"), "enabled": bool(settings.get("enabled"))}
 
 
 @app.put("/api/admin/payment-settings", dependencies=[Depends(require_owner)])
