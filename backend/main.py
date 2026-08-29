@@ -831,7 +831,7 @@ def site_settings():
     return {**DEFAULT_SITE_SETTINGS, **values}
 
 
-@app.put("/api/admin/settings", dependencies=[Depends(require_admin)])
+@app.put("/api/admin/settings", dependencies=[Depends(require_owner)])
 def update_site_settings(payload: SiteSettingsInput):
     with db() as conn:
         for key, value in payload.model_dump().items():
@@ -839,13 +839,13 @@ def update_site_settings(payload: SiteSettingsInput):
     return {"ok": True}
 
 
-@app.get("/api/admin/payment-settings", dependencies=[Depends(require_admin)])
+@app.get("/api/admin/payment-settings", dependencies=[Depends(require_owner)])
 def admin_payment_settings():
     settings = get_payment_settings()
     return {"has_merchant_id": bool(settings.get("merchant_id")), "site_url": settings.get("site_url", "https://jaabehakenegar.ir"), "enabled": bool(settings.get("enabled"))}
 
 
-@app.put("/api/admin/payment-settings", dependencies=[Depends(require_admin)])
+@app.put("/api/admin/payment-settings", dependencies=[Depends(require_owner)])
 def update_payment_settings(payload: PaymentSettingsInput):
     site_url = payload.site_url.strip().rstrip("/")
     if not site_url.startswith("https://"):
@@ -861,7 +861,7 @@ def update_payment_settings(payload: PaymentSettingsInput):
         conn.execute("UPDATE payment_settings SET merchant_id=?,site_url=?,enabled=?,updated_at=? WHERE id=1", (merchant_id, site_url, int(payload.enabled), datetime.now(timezone.utc).isoformat()))
     return {"ok": True, "has_merchant_id": bool(merchant_id), "enabled": payload.enabled, "site_url": site_url}
 
-@app.get("/api/admin/bale-settings", dependencies=[Depends(require_admin)])
+@app.get("/api/admin/bale-settings", dependencies=[Depends(require_owner)])
 def admin_bale_settings():
     settings = get_bale_settings()
     return {
@@ -871,7 +871,7 @@ def admin_bale_settings():
     }
 
 
-@app.put("/api/admin/bale-settings", dependencies=[Depends(require_admin)])
+@app.put("/api/admin/bale-settings", dependencies=[Depends(require_owner)])
 def update_bale_settings(payload: BaleSettingsInput):
     site_url = payload.site_url.strip().rstrip("/")
     if site_url and not site_url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
@@ -884,7 +884,7 @@ def update_bale_settings(payload: BaleSettingsInput):
     return {"ok": True, "has_token": bool(token), "has_payment_token": bool(payment_token)}
 
 
-@app.post("/api/admin/bale/test", dependencies=[Depends(require_admin)])
+@app.post("/api/admin/bale/test", dependencies=[Depends(require_owner)])
 def test_bale_connection():
     try:
         me = bale_api("getMe")
@@ -896,7 +896,7 @@ def test_bale_connection():
     return {"ok": True, "username": username, "name": me.get("first_name", "") if isinstance(me, dict) else ""}
 
 
-@app.post("/api/admin/bale/connect", dependencies=[Depends(require_admin)])
+@app.post("/api/admin/bale/connect", dependencies=[Depends(require_owner)])
 def connect_bale_webhook():
     settings = get_bale_settings()
     if not settings.get("site_url") or not settings["site_url"].startswith("https://"):
