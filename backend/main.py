@@ -22,7 +22,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -163,6 +163,11 @@ def init_db():
               id INTEGER PRIMARY KEY CHECK(id=1), bot_token TEXT NOT NULL DEFAULT '', site_url TEXT NOT NULL DEFAULT '',
               enabled INTEGER NOT NULL DEFAULT 0, webhook_secret TEXT NOT NULL, bot_username TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS payment_settings (
+              id INTEGER PRIMARY KEY CHECK(id=1), merchant_id TEXT NOT NULL DEFAULT '',
+              site_url TEXT NOT NULL DEFAULT 'https://jaabehakenegar.ir', enabled INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS bale_sessions (
               chat_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '', data_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL
             );
@@ -187,6 +192,14 @@ def init_db():
             conn.execute("ALTER TABLE orders ADD COLUMN logo_deleted_at TEXT NOT NULL DEFAULT ''")
         if "logo_delete_reason" not in order_columns:
             conn.execute("ALTER TABLE orders ADD COLUMN logo_delete_reason TEXT NOT NULL DEFAULT ''")
+        if "payment_authority" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN payment_authority TEXT NOT NULL DEFAULT ''")
+        if "payment_ref_id" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN payment_ref_id TEXT NOT NULL DEFAULT ''")
+        if "payment_amount" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN payment_amount INTEGER NOT NULL DEFAULT 0")
+        if "payment_verified_at" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN payment_verified_at TEXT NOT NULL DEFAULT ''")
         conn.execute("""UPDATE orders SET logo_expires_at=strftime('%Y-%m-%dT%H:%M:%f+00:00',created_at,'+10 days')
           WHERE logo_url<>'' AND logo_expires_at=''""")
         conn.execute("INSERT OR IGNORE INTO bale_settings(id,webhook_secret,updated_at) VALUES (1,?,?)", (secrets.token_urlsafe(24), datetime.now(timezone.utc).isoformat()))
@@ -210,6 +223,7 @@ def init_db():
         now = datetime.now(timezone.utc).isoformat()
         conn.execute("INSERT OR IGNORE INTO admin_users(mobile,role,active,created_at,created_by) VALUES (?,?,?,?,?)", (OWNER_MOBILE, "owner", 1, now, "system"))
         conn.execute("INSERT OR IGNORE INTO sms_settings(id,updated_at) VALUES (1,?)", (now,))
+        conn.execute("INSERT OR IGNORE INTO payment_settings(id,updated_at) VALUES (1,?)", (now,))
         sms_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sms_settings)")}
         if "verified" not in sms_columns:
             conn.execute("ALTER TABLE sms_settings ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
@@ -375,6 +389,12 @@ class BaleSettingsInput(BaseModel):
     enabled: bool = False
 
 
+class PaymentSettingsInput(BaseModel):
+    merchant_id: str = Field(default="", max_length=100)
+    site_url: str = Field(default="https://jaabehakenegar.ir", max_length=500)
+    enabled: bool = False
+
+
 class CategoryInput(BaseModel):
     name: str = Field(min_length=2, max_length=80)
 
@@ -421,6 +441,50 @@ def normalize_mobile(value: str) -> str:
         raise HTTPException(400, "شماره موبایل معتبر نیست")
     return translated
 
+
+ZARINPAL_REQUEST_URL = "https://api.zarinpal.com/pg/v4/payment/request.json"
+ZARINPAL_VERIFY_URL = "https://api.zarinpal.com/pg/v4/payment/verify.json"
+ZARINPAL_GATEWAY_URL = "https://www.zarinpal.com/pg/StartPay/"
+
+
+def get_payment_settings() -> dict:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM payment_settings WHERE id=1").fetchone()
+    return dict(row) if row else {"merchant_id": "", "site_url": "https://jaabehakenegar.ir", "enabled": 0}
+
+
+def zarinpal_post(url: str, payload: dict) -> dict:
+    request_data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=request_data, headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            result = json.loads(exc.read().decode("utf-8"))
+            errors = result.get("errors") or {}
+            message = errors.get("message") if isinstance(errors, dict) else ""
+        except Exception:
+            message = ""
+        raise HTTPException(502, message or "زرین‌پال درخواست را نپذیرفت؛ تنظیمات درگاه را بررسی کنید") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(502, "ارتباط با زرین‌پال برقرار نشد؛ چند دقیقه دیگر دوباره تلاش کنید") from exc
+    return result
+
+
+def request_zarinpal_payment(merchant_id: str, amount_toman: int, callback_url: str, description: str, mobile: str) -> tuple[str, str]:
+    result = zarinpal_post(ZARINPAL_REQUEST_URL, {
+        "merchant_id": merchant_id,
+        "amount": int(amount_toman) * 10,
+        "callback_url": callback_url,
+        "description": description,
+        "metadata": {"mobile": mobile},
+    })
+    data = result.get("data") or {}
+    if data.get("code") != 100 or not data.get("authority"):
+        raise HTTPException(502, data.get("message") or "ایجاد تراکنش زرین‌پال ناموفق بود")
+    authority = str(data["authority"])
+    return authority, ZARINPAL_GATEWAY_URL + urllib.parse.quote(authority)
 
 def require_admin(authorization: str = Header(default="")):
     token = authorization.removeprefix("Bearer ")
@@ -774,6 +838,28 @@ def update_site_settings(payload: SiteSettingsInput):
             conn.execute("INSERT INTO site_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value.strip()))
     return {"ok": True}
 
+
+@app.get("/api/admin/payment-settings", dependencies=[Depends(require_admin)])
+def admin_payment_settings():
+    settings = get_payment_settings()
+    return {"has_merchant_id": bool(settings.get("merchant_id")), "site_url": settings.get("site_url", "https://jaabehakenegar.ir"), "enabled": bool(settings.get("enabled"))}
+
+
+@app.put("/api/admin/payment-settings", dependencies=[Depends(require_admin)])
+def update_payment_settings(payload: PaymentSettingsInput):
+    site_url = payload.site_url.strip().rstrip("/")
+    if not site_url.startswith("https://"):
+        raise HTTPException(400, "آدرس سایت برای درگاه باید با HTTPS شروع شود")
+    supplied_merchant = payload.merchant_id.strip()
+    if supplied_merchant and not re.fullmatch(r"[0-9a-fA-F-]{36}", supplied_merchant):
+        raise HTTPException(400, "مرچنت آیدی زرین‌پال باید کد ۳۶ کاراکتری معتبر باشد")
+    with db() as conn:
+        current = conn.execute("SELECT merchant_id FROM payment_settings WHERE id=1").fetchone()
+        merchant_id = supplied_merchant or (current["merchant_id"] if current else "")
+        if payload.enabled and not merchant_id:
+            raise HTTPException(400, "ابتدا مرچنت آیدی زرین‌پال را وارد کنید")
+        conn.execute("UPDATE payment_settings SET merchant_id=?,site_url=?,enabled=?,updated_at=? WHERE id=1", (merchant_id, site_url, int(payload.enabled), datetime.now(timezone.utc).isoformat()))
+    return {"ok": True, "has_merchant_id": bool(merchant_id), "enabled": payload.enabled, "site_url": site_url}
 
 @app.get("/api/admin/bale-settings", dependencies=[Depends(require_admin)])
 def admin_bale_settings():
@@ -1384,6 +1470,7 @@ def upload(file: UploadFile = File(...), purpose: str = Form("product")):
 def create_order(payload: OrderInput):
     if payload.payment_method == "cod" and payload.city.strip().replace("‌", "") != "بهبهان":
         raise HTTPException(400, "پرداخت هنگام تحویل فقط برای شهر بهبهان فعال است")
+    payment_url, payment_authority, payment_amount = "", "", 0
     with db() as conn:
         lines, total = [], 0
         for item in payload.items:
@@ -1397,13 +1484,21 @@ def create_order(payload: OrderInput):
             lines.append((product, item.packs, line_total))
         order_number = f"HJ-{datetime.now():%y%m%d}-{secrets.randbelow(9000)+1000}"
         payment_status = {"online": "pending", "cod": "cod", "deposit": "deposit_pending"}[payload.payment_method]
+        if payload.payment_method in {"online", "deposit"}:
+            settings = conn.execute("SELECT * FROM payment_settings WHERE id=1").fetchone()
+            if not settings or not settings["enabled"] or not settings["merchant_id"]:
+                raise HTTPException(503, "درگاه زرین‌پال هنوز در پنل مدیریت فعال نشده است")
+            payment_amount = (total + 5) // 10 if payload.payment_method == "deposit" else total
+            callback_url = settings["site_url"].rstrip("/") + "/api/payments/zarinpal/callback?order=" + urllib.parse.quote(order_number)
+            description = f"{'بیعانه سفارش' if payload.payment_method == 'deposit' else 'پرداخت سفارش'} {order_number} حک نگار"
+            payment_authority, payment_url = request_zarinpal_payment(settings["merchant_id"], payment_amount, callback_url, description, payload.mobile)
         created_at = datetime.now(timezone.utc)
         logo_expires_at = (created_at + timedelta(days=CUSTOMER_LOGO_RETENTION_DAYS)).isoformat() if payload.logo_url else ""
         cursor = conn.execute(
-            """INSERT INTO orders(order_number,mobile,shop_name,address,city,shop_phone,instagram,logo_url,notes,bale_chat_id,payment_method,payment_status,status,total_price,logo_expires_at,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO orders(order_number,mobile,shop_name,address,city,shop_phone,instagram,logo_url,notes,bale_chat_id,payment_method,payment_status,status,total_price,logo_expires_at,payment_authority,payment_amount,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (order_number, payload.mobile, payload.shop_name, payload.address, payload.city, payload.shop_phone, payload.instagram,
-             payload.logo_url, payload.notes, payload.bale_chat_id.strip(), payload.payment_method, payment_status, "new", total, logo_expires_at, created_at.isoformat()),
+             payload.logo_url, payload.notes, payload.bale_chat_id.strip(), payload.payment_method, payment_status, "new", total, logo_expires_at, payment_authority, payment_amount, created_at.isoformat()),
         )
         if payload.logo_url:
             conn.execute("INSERT OR IGNORE INTO customer_uploads(url,created_at) VALUES (?,?)", (payload.logo_url, created_at.isoformat()))
@@ -1417,13 +1512,45 @@ def create_order(payload: OrderInput):
     notify_admin_new_order(order_number, total, payload, lines)
     if payload.bale_chat_id.strip():
         notify_bale_order(payload.bale_chat_id.strip(), f"✅ سفارش شما با کد {order_number} ثبت شد.\nمبلغ کل: {total:,} تومان\nزمان آماده‌شدن سفارش حدود ۲۰ روز است.\nبرای پیگیری، کد سفارش را در همین گفت‌وگو ارسال کنید.")
-    return {"order_number": order_number, "total_price": total, "payable_now": round(total * 0.1) if payload.payment_method == "deposit" else total, "payment_status": payment_status}
+    return {"order_number": order_number, "total_price": total, "payable_now": (total + 5) // 10 if payload.payment_method == "deposit" else total, "payment_status": payment_status, "payment_url": payment_url}
 
+
+@app.get("/api/payments/zarinpal/callback")
+def zarinpal_callback(order: str, Authority: str = "", Status: str = ""):
+    result_path = "/payment-result?order=" + urllib.parse.quote(order)
+    with db() as conn:
+        current = conn.execute("SELECT * FROM orders WHERE order_number=?", (order,)).fetchone()
+        if not current or current["payment_method"] not in {"online", "deposit"}:
+            return RedirectResponse(result_path + "&result=not-found", status_code=303)
+        if current["payment_status"] in {"paid", "deposit_paid"}:
+            return RedirectResponse(result_path + "&result=success", status_code=303)
+        if Status.upper() != "OK" or not Authority or not hmac.compare_digest(Authority, current["payment_authority"]):
+            conn.execute("UPDATE orders SET payment_status='failed' WHERE id=?", (current["id"],))
+            return RedirectResponse(result_path + "&result=cancelled", status_code=303)
+        settings = conn.execute("SELECT * FROM payment_settings WHERE id=1").fetchone()
+        if not settings or not settings["merchant_id"]:
+            return RedirectResponse(result_path + "&result=error", status_code=303)
+        try:
+            verification = zarinpal_post(ZARINPAL_VERIFY_URL, {"merchant_id": settings["merchant_id"], "amount": int(current["payment_amount"]) * 10, "authority": Authority})
+        except HTTPException:
+            return RedirectResponse(result_path + "&result=error", status_code=303)
+        data = verification.get("data") or {}
+        if data.get("code") not in {100, 101}:
+            conn.execute("UPDATE orders SET payment_status='failed' WHERE id=?", (current["id"],))
+            return RedirectResponse(result_path + "&result=failed", status_code=303)
+        paid_status = "deposit_paid" if current["payment_method"] == "deposit" else "paid"
+        ref_id = str(data.get("ref_id") or current["payment_ref_id"] or "")
+        verified_at = datetime.now(timezone.utc).isoformat()
+        conn.execute("UPDATE orders SET payment_status=?,payment_ref_id=?,payment_verified_at=? WHERE id=?", (paid_status, ref_id, verified_at, current["id"]))
+        bale_chat_id = current["bale_chat_id"]
+    if bale_chat_id:
+        notify_bale_order(bale_chat_id, f"✅ پرداخت سفارش {order} با موفقیت تأیید شد.\nکد پیگیری زرین‌پال: {ref_id}")
+    return RedirectResponse(result_path + "&result=success", status_code=303)
 
 @app.get("/api/orders/track/{order_number}")
 def track_order(order_number: str):
     with db() as conn:
-        order = conn.execute("""SELECT id,order_number,shop_name,payment_method,payment_status,status,total_price,
+        order = conn.execute("""SELECT id,order_number,shop_name,payment_method,payment_status,status,total_price,payment_amount,payment_ref_id,payment_verified_at,
           estimated_ready_date,created_at FROM orders WHERE UPPER(order_number)=UPPER(?)""", (order_number.strip(),)).fetchone()
         if not order:
             raise HTTPException(404, "سفارشی با این کد پیدا نشد")
