@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /order/cart
+Disallow: /order/details
+Disallow: /order/payment
+Disallow: /order/success
+Disallow: /payment-result
+
+Sitemap: https://jaabehaknegar.ir/sitemap.xml
