@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import DatePickerPackage from 'react-multi-date-picker';
 import persian from 'react-date-object/calendars/persian';
 import persian_fa from 'react-date-object/locales/persian_fa';
@@ -28,18 +28,45 @@ function Logo() {
   return <div className="brand"><div className="brand-mark"><img src="/hakkar-logo.png?v=2" alt="لوگوی تولیدی حک نگار" /></div><div><h1>تولیدی جعبه جواهرات حک نگار</h1><p>فروش عمده ویژه طلافروشی‌ها</p></div></div>;
 }
 
-function Gallery({ images = [] }) {
+function Gallery({ images = [], name = 'جعبه جواهرات' }) {
   const [index, setIndex] = useState(0);
+  const rail = useRef(null);
   const list = images.length ? images : ['/jewelry-box.png'];
-  useEffect(() => setIndex(0), [images]);
-  return <div className="gallery">
-    <img src={asset(list[index])} alt="تصویر جعبه جواهرات" />
+  const imageKey = images.join('|');
+  useEffect(() => { setIndex(0); if (rail.current) rail.current.scrollLeft = 0; }, [imageKey]);
+  const move = next => {
+    const el = rail.current;
+    if (!el) return;
+    el.scrollTo({left: ((next + list.length) % list.length) * el.clientWidth,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+  };
+  return <div className="gallery" role="region" aria-label={`تصاویر ${name}`}>
+    <div className="gallery-rail" ref={rail} dir="ltr" tabIndex={list.length > 1 ? 0 : -1}
+      onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); move(index + (event.key === 'ArrowRight' ? 1 : -1)); } }}
+      onScroll={event => { const el = event.currentTarget; setIndex(Math.round(el.scrollLeft / el.clientWidth)); }}>
+      {list.map((url, i) => <img key={url + i} src={asset(url)} alt={`${name}؛ تصویر ${digits(i + 1)}`} loading="lazy" decoding="async" draggable="false"/>)}
+    </div>
     {list.length > 1 && <>
-      <button aria-label="تصویر قبلی" className="gallery-arrow right" onClick={() => setIndex((index - 1 + list.length) % list.length)}><ChevronRight/></button>
-      <button aria-label="تصویر بعدی" className="gallery-arrow left" onClick={() => setIndex((index + 1) % list.length)}><ChevronLeft/></button>
-      <span className="image-count">{digits(index + 1)} / {digits(list.length)}</span>
+      <button type="button" aria-label={`تصویر قبلی ${name}`} className="gallery-arrow right" onClick={() => move(index - 1)}><ChevronRight/></button>
+      <button type="button" aria-label={`تصویر بعدی ${name}`} className="gallery-arrow left" onClick={() => move(index + 1)}><ChevronLeft/></button>
+      <span className="image-count" aria-live="polite">{digits(index + 1)} / {digits(list.length)}</span>
     </>}
   </div>;
+}
+
+function Reveal({children, className = ''}) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    el.classList.add('reveal-pending');
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) { el.classList.remove('reveal-pending'); observer.disconnect(); }
+    }, {threshold: 0.08});
+    observer.observe(el);
+    return () => { observer.disconnect(); el.classList.remove('reveal-pending'); };
+  }, []);
+  return <div ref={ref} className={`soft-reveal ${className}`}>{children}</div>;
 }
 
 function Quantity({ value, max, onChange }) {
@@ -51,12 +78,13 @@ function Quantity({ value, max, onChange }) {
 }
 
 function ProductCard({ product, quantity, onQuantity }) {
-  return <article className="product-card">
-    <Gallery images={product.images}/>
+  return <article className={`product-card${quantity ? ' in-cart' : ''}`}>
+    <Gallery images={product.images} name={product.name}/>
     <div className="product-info">
-      <div className="stock-badge">{product.stock_packs ? 'موجود' : 'ناموجود'}</div>
+      <div className={`stock-badge${product.stock_packs ? '' : ' unavailable'}`}>{product.stock_packs ? 'موجود' : 'ناموجود'}</div>
       <h3>{product.name}</h3>
       <p>سایز {product.dimensions}</p>
+      {product.description && <details className="product-description"><summary>توضیحات محصول</summary><p>{product.description}</p></details>}
       <p>قیمت هر عدد: <b>{money(product.unit_price)}</b></p>
       <p>تعداد هر بسته: {digits(product.units_per_pack)} عدد</p>
       <div className="pack-price"><span>قیمت هر بسته</span><b>{money(product.pack_price)}</b></div>
@@ -69,13 +97,47 @@ function Footer({settings=defaultSettings}) {
   const services=(settings.services||'').split('\n').filter(Boolean);
   return <footer className="site-footer"><div className="footer-grid"><div className="footer-about"><Logo/><p>{settings.about}</p></div><div><h3>درباره ما و خدمات</h3><ul>{services.map((service,i)=><li key={i}>{service}</li>)}</ul></div><div><h3>تماس با ما</h3><ul><li><b>{settings.manager_name}</b></li><li><b>تلفن:</b> <a href={`tel:${settings.phone}`} dir="ltr">{settings.phone}</a></li><li><b>ساعات پاسخ‌گویی:</b> {settings.working_hours}</li><li><b>نوع فروش:</b> {settings.sales_type}</li></ul></div><div><h3>نشانی تولیدی</h3><address>{settings.address}</address><a className="footer-call" href={`tel:${settings.phone}`}>تماس با {settings.production_name}</a></div></div><div className="footer-trust"><h3>نماد اعتماد الکترونیکی</h3><a referrerPolicy="origin" target="_blank" href="https://trustseal.enamad.ir/?id=7496896&Code=CfAAkWPTKsZO0I91P1uXx1kRPRUvr7ht" aria-label="مشاهده اعتبار نماد اعتماد الکترونیکی حک نگار"><img src="https://reg2.enamad.ir/rc/outResource/dist/img/logopng/010.png" alt="نماد اعتماد الکترونیکی بدون ستاره حک نگار"/></a></div><div className="footer-bottom"><span>© {new Date().getFullYear()} تولیدی {settings.production_name}؛ تمامی حقوق محفوظ است.</span><span>{settings.footer_note}</span></div></footer>;
 }
+function VisitorLabel({full=false}) {
+  return <span className="visitor-label"><span>{full ? 'درخواست مراجعه ویزیتور' : 'درخواست ویزیتور'}</span><small className="visitor-city">(ویژه بهبهان)</small></span>;
+}
 function LogoHeader(){
   return <header className="home-logo-header"><Logo/></header>;
 }
 
 function Home({catalog,settings,onOrder,onTrack,onVisitor}){
-  const heroImage='/home-hero.webp';
-  return <div className="home-page"><LogoHeader/><main><section className="home-hero"><div className="home-hero-copy"><div className="home-eyebrow">تولیدی جعبه جواهرات حک نگار</div><h2>جعبه‌ای درخور<br/>اعتبار طلافروشی شما</h2><p>تولید تخصصی و فروش عمده جعبه‌های جواهرات با امکان درج اختصاصی اطلاعات و نشان فروشگاه شما</p><div className="home-actions"><button className="home-primary-action" onClick={onOrder}><ShoppingBag/>ثبت سفارش</button><button onClick={onTrack}><PackageOpen/>پیگیری سفارش</button><button onClick={onVisitor}><MapPin/>درخواست ویزیتور <small>ویژه بهبهان</small></button></div></div><div className="home-hero-visual"><div className="home-image-glow"></div><img src={asset(heroImage)} alt="جعبه جواهرات حک نگار"/><span>فروش عمده ویژه طلافروشی‌ها</span></div></section><section className="home-benefits"><div><Gem/><span>تولید مستقیم و باکیفیت</span></div><div><Paintbrush/><span>امکان شخصی‌سازی و حکاکی</span></div><div><Truck/><span>ارسال مطمئن سفارش‌ها</span></div></section><section className="home-services"><div className="home-section-heading"><span></span><div><small>همراه طلافروشی شما</small><h2>خدمات حک نگار</h2></div><span></span></div><div className="home-service-grid"><article><ClipboardCheck/><h3>سفارش اختصاصی</h3><p>انتخاب مدل، تعداد و ثبت اطلاعات موردنظر برای حکاکی روی جعبه‌ها</p><button onClick={onOrder}>مشاهده محصولات <ArrowLeft/></button></article><article><PackageOpen/><h3>پیگیری سفارشات</h3><p>مشاهده وضعیت سفارش، روش پرداخت، اقلام ثبت‌شده و تاریخ تقریبی آماده‌شدن</p><button onClick={onTrack}>پیگیری سفارش <ArrowLeft/></button></article><article><MapPin/><h3>بازدید حضوری در بهبهان</h3><p>ثبت درخواست مراجعه ویزیتور برای مشاهده مدل‌ها و هماهنگی سفارش</p><button onClick={onVisitor}>درخواست ویزیتور <ArrowLeft/></button></article></div></section></main><Footer settings={settings}/></div>;
+  const [paused,setPaused]=useState(false);
+  const homeRef=useRef(null);
+  useEffect(()=>{
+    const root=homeRef.current;
+    const observer=new IntersectionObserver(entries=>entries.forEach(entry=>entry.target.dataset.active=String(entry.isIntersecting)),{threshold:.05});
+    root.querySelectorAll('.motion-zone').forEach(el=>observer.observe(el));
+    const visibility=()=>{root.dataset.hidden=String(document.hidden)};
+    visibility();document.addEventListener('visibilitychange',visibility);
+    return()=>{observer.disconnect();document.removeEventListener('visibilitychange',visibility)};
+  },[]);
+  const tilt=event=>{
+    if(paused || event.pointerType!=='mouse' || matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    const el=event.currentTarget,rect=el.getBoundingClientRect();
+    el.style.setProperty('--tilt-y',`${((event.clientX-rect.left)/rect.width-.5)*12}deg`);
+    el.style.setProperty('--tilt-x',`${(.5-(event.clientY-rect.top)/rect.height)*9}deg`);
+  };
+  const resetTilt=event=>{event.currentTarget.style.setProperty('--tilt-x','0deg');event.currentTarget.style.setProperty('--tilt-y','0deg')};
+  return <div ref={homeRef} data-paused={paused} className="home-page refreshed-home"><LogoHeader/><main>
+    <section className="atelier-hero motion-zone">
+      <div className="atelier-copy">
+        <span className="atelier-eyebrow"><span/> از کارگاه ما، برای ویترین شما</span>
+        <h2>زیبایی جواهر،<br/><em>از جعبه آغاز می‌شود.</em></h2>
+        <p>جعبه‌های جواهرات با نشان اختصاصی فروشگاه شما؛<br className="desktop-break"/> تولید مستقیم، انتخاب آسان و سفارش عمده.</p>
+        <button className="atelier-primary" onClick={onOrder}>دیدن مدل‌ها و ثبت سفارش <ArrowLeft size={20}/></button>
+        <div className="atelier-secondary"><button onClick={onTrack}><PackageOpen size={18}/>پیگیری سفارش</button><span/><button onClick={onVisitor}><MapPin size={18}/><VisitorLabel/></button></div>
+        <div className="atelier-note"><Paintbrush size={16}/> نام و نشان شما، روی جعبه‌های ما</div>
+      </div>
+      <div className="hero-depth-scene" onPointerMove={tilt} onPointerLeave={resetTilt}><div className="hero-orbit hero-orbit-one" aria-hidden="true"/><div className="hero-orbit hero-orbit-two" aria-hidden="true"/><div className="hero-float"><div className="wood-hero-frame"><span className="wood-frame-corner" aria-hidden="true"/><div className="atelier-image"><img src="/wood-collection.webp" width="1449" height="1085" fetchPriority="high" alt="مجموعه جعبه‌های چوبی حک نگار با حکاکی اختصاصی"/><div className="atelier-image-caption"><span>جزئیات کوچک، تفاوت ماندگار</span><b>ساخته‌شده برای ارزشمندترین‌ها</b></div></div><div className="wood-signature" aria-hidden="true"><span/><small>حک نگار · ظرافت در چوب</small><span/></div></div><span className="hero-depth-badge" aria-hidden="true"><Gem size={20}/> گرمای چوب، ظرافت جواهر</span></div><button className="motion-toggle" aria-pressed={paused} onClick={()=>setPaused(value=>!value)}>{paused?'پخش حرکت‌ها':'توقف حرکت‌ها'}</button></div>
+    </section>
+    <div className="atelier-values"><span><Gem/>تولید مستقیم</span><span><Paintbrush/>حکاکی اختصاصی</span><span><Truck/>ارسال سفارش‌ها</span></div>
+    <Reveal className="atelier-process"><div className="atelier-section-title"><div><small>ساده، از انتخاب تا آماده‌سازی</small><h2>سفارش شما در سه قدم</h2></div><Paintbrush size={30}/></div><div className="atelier-process-grid">{[['مدل دلخواه را انتخاب کنید','مدل و تعداد بسته‌های موردنیاز فروشگاهتان را مشخص کنید.'],['نشان خود را اضافه کنید','اطلاعات حکاکی و لوگوی فروشگاه را در سفارش ثبت کنید.'],['به‌زودی در راه فروشگاه شما','سفارشتان با دقت و در کوتاه‌ترین زمان آماده می‌شود و راهی فروشگاه شما خواهد شد.']].map(([title,copy],i)=><article key={title}><span>{digits(i+1).padStart(2,'۰')}</span><h3>{title}</h3><p>{copy}</p></article>)}</div></Reveal>
+    <Reveal className="atelier-visit"><div><span className="atelier-eyebrow">ویژه طلافروشی‌های بهبهان</span><h2>از نزدیک انتخاب کنید.</h2><p>برای دیدن مدل‌ها و هماهنگی سفارش، درخواست مراجعه ویزیتور <small className="visitor-city">(ویژه بهبهان)</small> ثبت کنید.</p></div><button onClick={onVisitor}><VisitorLabel/> <ArrowLeft size={19}/></button></Reveal>
+  </main><Footer settings={settings}/></div>;
 }
 
 function TrackingPage({settings,onBack}){
@@ -87,7 +149,7 @@ function TrackingPage({settings,onBack}){
 function VisitorRequestPage({settings,onBack}){
   const [data,setData]=useState({shop_name:'',mobile:'',address:'',source:'site'}); const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const [result,setResult]=useState(null);
   const submit=async e=>{e.preventDefault();setBusy(true);setError('');try{setResult(await request('/api/visitor-requests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}))}catch(e){setError(e.message)}finally{setBusy(false)}};
-  return <div className="standalone-page"><LogoHeader/><main className="standalone-service-page"><button className="standalone-back" onClick={onBack}><ArrowRight/>بازگشت به خانه</button><div className="modal visitor-modal visitor-page-card">{result?<div className="visitor-success"><Check/><h3>درخواست شما ثبت شد</h3><p>ویزیتور ما در اسرع وقت میاد خدمتتون.</p><small>کد درخواست: <b dir="ltr">{result.request_number}</b></small><button className="primary" onClick={onBack}>بازگشت به خانه</button></div>:<><div className="service-page-icon"><MapPin/></div><div className="service-page-title"><small>ویژه شهر بهبهان</small><h2>درخواست مراجعه ویزیتور</h2><p>در صورتی تمایل دارید ویزیتور ما در اسرع وقت جهت نشان دادن مدل‌ها خدمت شما برسد، اطلاعات زیر را ثبت کنید.</p></div><form className="visitor-form" onSubmit={submit}><label><span>نام مغازه</span><input required minLength="2" value={data.shop_name} onChange={e=>setData({...data,shop_name:e.target.value})}/></label><label><span>شماره موبایل جهت هماهنگی</span><input required dir="ltr" inputMode="numeric" pattern="09[0-9]{9}" placeholder="09123456789" value={data.mobile} onChange={e=>setData({...data,mobile:e.target.value})}/></label><label><span>آدرس کامل مغازه در بهبهان</span><textarea required minLength="5" value={data.address} onChange={e=>setData({...data,address:e.target.value})}/></label>{error&&<div className="error">{error}</div>}<button className="primary wide" disabled={busy}>{busy?'در حال ثبت...':'ثبت درخواست مراجعه'}</button></form></>}</div></main><Footer settings={settings}/></div>;
+  return <div className="standalone-page"><LogoHeader/><main className="standalone-service-page"><button className="standalone-back" onClick={onBack}><ArrowRight/>بازگشت به خانه</button><div className="modal visitor-modal visitor-page-card">{result?<div className="visitor-success"><Check/><h3>درخواست شما ثبت شد</h3><p>ویزیتور ما در اسرع وقت میاد خدمتتون.</p><small>کد درخواست: <b dir="ltr">{result.request_number}</b></small><button className="primary" onClick={onBack}>بازگشت به خانه</button></div>:<><div className="service-page-icon"><MapPin/></div><div className="service-page-title"><small>ویژه شهر بهبهان</small><h2><VisitorLabel full/></h2><p>در صورتی تمایل دارید ویزیتور ما در اسرع وقت جهت نشان دادن مدل‌ها خدمت شما برسد، اطلاعات زیر را ثبت کنید.</p></div><form className="visitor-form" onSubmit={submit}><label><span>نام مغازه</span><input required minLength="2" value={data.shop_name} onChange={e=>setData({...data,shop_name:e.target.value})}/></label><label><span>شماره موبایل جهت هماهنگی</span><input required dir="ltr" inputMode="numeric" pattern="09[0-9]{9}" placeholder="09123456789" value={data.mobile} onChange={e=>setData({...data,mobile:e.target.value})}/></label><label><span>آدرس کامل مغازه در بهبهان</span><textarea required minLength="5" value={data.address} onChange={e=>setData({...data,address:e.target.value})}/></label>{error&&<div className="error">{error}</div>}<button className="primary wide" disabled={busy}>{busy?'در حال ثبت...':'ثبت درخواست مراجعه'}</button></form></>}</div></main><Footer settings={settings}/></div>;
 }
 function TrackingModal({ onClose }) {
   const [code,setCode]=useState(''); const [order,setOrder]=useState(null); const [busy,setBusy]=useState(false); const [error,setError]=useState('');
@@ -97,24 +159,31 @@ function TrackingModal({ onClose }) {
 function VisitorRequestModal({onClose}) {
   const [stage,setStage]=useState('intro'); const [data,setData]=useState({shop_name:'',mobile:'',address:'',source:'site'}); const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const [result,setResult]=useState(null);
   const submit=async e=>{e.preventDefault();setBusy(true);setError('');try{const saved=await request('/api/visitor-requests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});setResult(saved);setStage('success')}catch(e){setError(e.message)}finally{setBusy(false)}};
-  return <div className="modal-backdrop visitor-backdrop"><div className="modal visitor-modal"><div className="modal-title"><h2>درخواست مراجعه ویزیتور</h2><button className="icon-button" onClick={onClose}><X/></button></div>{stage==='intro'?<div className="visitor-intro"><MapPin/><p>در صورتی تمایل دارید ویزیتور ما در اسرع وقت جهت نشان دادن مدل ها خدمت شما برسد لطفا اطلاعات و آدرس را ثبت کنید</p><button className="primary wide" onClick={()=>setStage('form')}>ثبت اطلاعات مراجعه</button></div>:stage==='form'?<form className="visitor-form" onSubmit={submit}><label><span>نام مغازه</span><input required minLength="2" value={data.shop_name} onChange={e=>setData({...data,shop_name:e.target.value})}/></label><label><span>شماره موبایل جهت هماهنگی</span><input required dir="ltr" inputMode="numeric" pattern="09[0-9]{9}" placeholder="09123456789" value={data.mobile} onChange={e=>setData({...data,mobile:e.target.value})}/></label><label><span>آدرس کامل مغازه در بهبهان</span><textarea required minLength="5" value={data.address} onChange={e=>setData({...data,address:e.target.value})}/></label>{error&&<div className="error">{error}</div>}<button className="primary wide" disabled={busy}>{busy?'در حال ثبت...':'ثبت درخواست مراجعه'}</button></form>:<div className="visitor-success"><Check/><h3>درخواست شما ثبت شد</h3><p>ویزیتور ما در اسرع وقت میاد خدمتتون.</p><small>کد درخواست: <b dir="ltr">{result?.request_number}</b></small><button className="primary" onClick={onClose}>بستن</button></div>}</div></div>;
+  return <div className="modal-backdrop visitor-backdrop"><div className="modal visitor-modal"><div className="modal-title"><h2><VisitorLabel full/></h2><button className="icon-button" onClick={onClose}><X/></button></div>{stage==='intro'?<div className="visitor-intro"><MapPin/><p>در صورتی تمایل دارید ویزیتور ما در اسرع وقت جهت نشان دادن مدل ها خدمت شما برسد لطفا اطلاعات و آدرس را ثبت کنید</p><button className="primary wide" onClick={()=>setStage('form')}>ثبت اطلاعات مراجعه</button></div>:stage==='form'?<form className="visitor-form" onSubmit={submit}><label><span>نام مغازه</span><input required minLength="2" value={data.shop_name} onChange={e=>setData({...data,shop_name:e.target.value})}/></label><label><span>شماره موبایل جهت هماهنگی</span><input required dir="ltr" inputMode="numeric" pattern="09[0-9]{9}" placeholder="09123456789" value={data.mobile} onChange={e=>setData({...data,mobile:e.target.value})}/></label><label><span>آدرس کامل مغازه در بهبهان</span><textarea required minLength="5" value={data.address} onChange={e=>setData({...data,address:e.target.value})}/></label>{error&&<div className="error">{error}</div>}<button className="primary wide" disabled={busy}>{busy?'در حال ثبت...':'ثبت درخواست مراجعه'}</button></form>:<div className="visitor-success"><Check/><h3>درخواست شما ثبت شد</h3><p>ویزیتور ما در اسرع وقت میاد خدمتتون.</p><small>کد درخواست: <b dir="ltr">{result?.request_number}</b></small><button className="primary" onClick={onClose}>بستن</button></div>}</div></div>;
 }
-function Catalog({ catalog, settings, cart, setCart, goCheckout, onTrack, onVisitor }) {
+function Catalog({ catalog, settings, cart, setCart, goCheckout, onTrack, onVisitor, onHome }) {
   const count = Object.values(cart).reduce((a, b) => a + b, 0);
-  return <>
+  const total = catalog.flatMap(c=>c.products).reduce((sum,p)=>sum+p.pack_price*(cart[p.id]||0),0);
+  const [active, setActive] = useState('all');
+  const shown = active === 'all' ? catalog : catalog.filter(c=>String(c.id)===active);
+  return <div className="refreshed-catalog">
     <LogoHeader/>
-    <div className="catalog-quick-actions"><button onClick={onTrack}><PackageOpen/><span><b>پیگیری سفارش</b><small>مشاهده وضعیت سفارش ثبت‌شده</small></span></button><button onClick={onVisitor}><MapPin/><span><b>درخواست ویزیتور</b><small>ویژه فروشگاه‌های بهبهان</small></span></button></div>
     <main className="catalog-shell">
-      {catalog.map(category => <section className="category" key={category.id}>
-        <div className="section-title"><span></span><div><h2>{category.name}</h2><i></i></div><span></span></div>
+      <div className="catalog-intro"><button className="catalog-home" onClick={onHome}><ArrowRight size={16}/>صفحه اصلی</button><div className="catalog-intro-row"><div><span className="atelier-eyebrow">انتخاب شما، آغاز یک سفارش خاص</span><h2>ویترین جعبه‌های حک نگار</h2><p>مدل دلخواه و تعداد بسته‌ها را انتخاب کنید؛ اطلاعات حکاکی در مرحله بعد.</p></div><div className="catalog-service-links"><button onClick={onTrack}><PackageOpen size={18}/>پیگیری سفارش</button><button onClick={onVisitor}><MapPin size={18}/><VisitorLabel/></button></div></div></div>
+      <nav className="category-nav" aria-label="دسته‌بندی محصولات"><button aria-pressed={active==='all'} onClick={()=>setActive('all')}>همه مدل‌ها <span>{digits(catalog.reduce((n,c)=>n+c.products.length,0))}</span></button>{catalog.map(c=><button key={c.id} aria-pressed={active===String(c.id)} onClick={()=>setActive(String(c.id))}>{c.name}<span>{digits(c.products.length)}</span></button>)}</nav>
+      <div className="catalog-help"><Box size={16}/><span>قیمت‌ها به تومان است؛ انتخاب تعداد بر اساس بسته انجام می‌شود.</span><small>برای دیدن عکس‌های بیشتر، تصویر را ورق بزنید.</small></div>
+      {shown.map(category => <section className="category" key={category.id} aria-labelledby={`category-${category.id}`}>
+        <div className="catalog-category-heading"><div><span className="category-symbol"><Gem size={22}/></span><h2 id={`category-${category.id}`}>{category.name}</h2></div><span>{digits(category.products.length)} مدل</span></div>
         <div className="products-grid">{category.products.map(product => <ProductCard key={product.id} product={product} quantity={cart[product.id]} onQuantity={qty => setCart(current => ({...current, [product.id]: qty}))}/>)}</div>
+        {!category.products.length && <p className="catalog-empty">به‌زودی مدل‌های این دسته اضافه می‌شوند.</p>}
       </section>)}
+      {!catalog.length && <p className="catalog-empty">در حال حاضر محصولی در ویترین موجود نیست.</p>}
     </main>
     <Footer settings={settings}/>
-    <div className="sticky-cart"><button disabled={!count} onClick={goCheckout}><ArrowLeft/><span>ادامه فرایند خرید</span><em>{count ? `${digits(count)} بسته` : 'سبد خرید خالی است'}</em></button></div>
-
-  </>;
+    <div className="sticky-cart"><button disabled={!count} onClick={goCheckout}><ShoppingBag/><span>بررسی و ادامه سفارش<small>{count ? `${digits(count)} بسته انتخاب شده` : 'ابتدا محصول دلخواهتان را انتخاب کنید'}</small></span><em>{count ? money(total) : 'سبد خرید خالی است'} <ArrowLeft size={17}/></em></button></div>
+  </div>;
 }
+
 function Steps({ active }) {
   const names = ['سبد خرید', 'اطلاعات حکاکی', 'روش پرداخت'];
   return <div className="steps">{names.map((name, i) => <div className={i <= active ? 'active' : ''} key={name}><span>{i < active ? <Check size={16}/> : digits(i + 1)}</span><b>{name}</b></div>)}</div>;
@@ -292,7 +361,7 @@ export default function App(){
   useEffect(()=>{Promise.all([request('/api/catalog'),request('/api/settings')]).then(([catalogData,settingsData])=>{setCatalog(catalogData);setSettings(settingsData)}).catch(e=>setError(e.message)).finally(()=>setLoading(false))},[]);
   useEffect(()=>localStorage.setItem('hakkar-cart',JSON.stringify(cart)),[cart]);
   useEffect(()=>{const onPopState=()=>{setStep(currentStep());window.scrollTo({top:0,behavior:'auto'})};addEventListener('popstate',onPopState);return()=>removeEventListener('popstate',onPopState)},[]);
-  useEffect(()=>{const titles={home:'حک نگار | جعبه جواهرات',catalog:'ثبت سفارش | حک نگار',checkout:'سبد خرید | حک نگار',customer:'اطلاعات سفارش | حک نگار',payment:'روش پرداخت | حک نگار',success:'ثبت موفق سفارش | حک نگار',paymentResult:'نتیجه پرداخت | حک نگار',tracking:'پیگیری سفارش | حک نگار',visitor:'درخواست ویزیتور | حک نگار',admin:'پنل مدیریت | حک نگار'};document.title=titles[step]||titles.home},[step]);
+  useEffect(()=>{const titles={home:'حک نگار | جعبه جواهرات',catalog:'ثبت سفارش | حک نگار',checkout:'سبد خرید | حک نگار',customer:'اطلاعات سفارش | حک نگار',payment:'روش پرداخت | حک نگار',success:'ثبت موفق سفارش | حک نگار',paymentResult:'نتیجه پرداخت | حک نگار',tracking:'پیگیری سفارش | حک نگار',visitor:'درخواست ویزیتور (ویژه بهبهان) | حک نگار',admin:'پنل مدیریت | حک نگار'};document.title=titles[step]||titles.home},[step]);
   useEffect(()=>{if(!loading&&['checkout','customer','payment'].includes(step)&&!items.length)navigate('catalog',{replace:true});if(step==='success'&&!result)navigate('catalog',{replace:true})},[loading,step,items.length,result]);
   if(step==='admin')return <Admin/>;
   if(loading)return <div className="loading"><Box/><p>در حال آماده‌سازی ویترین...</p></div>; if(error)return <div className="loading error">{error}<small>ابتدا سرور پایتون را اجرا کنید.</small></div>;
@@ -304,5 +373,5 @@ export default function App(){
   if(step==='payment')return <Payment customer={customer} items={items} cart={cart} onBack={()=>navigate('customer')} onDone={(r,m)=>{setResult(r);setMethod(m);setCart({});navigate('success')}}/>;
   if(step==='success')return <Success result={result} method={method} onHome={()=>{navigate('home');request('/api/catalog').then(setCatalog)}}/>;
   if(step==='paymentResult')return <PaymentResult settings={settings} onHome={()=>navigate('home')}/>;
-  return <Catalog catalog={catalog} settings={settings} cart={cart} setCart={setCart} goCheckout={()=>items.length&&navigate('checkout')} onTrack={()=>navigate('tracking')} onVisitor={()=>navigate('visitor')}/>;
+  return <Catalog onHome={()=>navigate('home')} catalog={catalog} settings={settings} cart={cart} setCart={setCart} goCheckout={()=>items.length&&navigate('checkout')} onTrack={()=>navigate('tracking')} onVisitor={()=>navigate('visitor')}/>;
 }
